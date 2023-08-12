@@ -1,0 +1,189 @@
+---
+title: "R Notebook -- Predicting prices in a housing dataset"
+output: html_notebook
+---
+
+```{r}
+library(readr)
+
+data <- read_csv('Housing.csv')
+head(data)
+
+```
+
+```{r}
+library(dplyr)
+library(rsample)
+library(ggplot2)
+library(corrr)
+library(recipes)
+library(parsnip)
+library(broom)
+
+housing <- data
+
+housing %>% 
+  select(where(~ !is.factor(.x))) %>% 
+  corrr::correlate() %>% 
+  corrr::focus(price) %>%
+  corrr::fashion()
+```
+
+```{r}
+library(dplyr)
+library(rsample)
+library(ggplot2)
+library(corrr)
+library(recipes)
+library(parsnip)
+
+housing %>% 
+  select(where(~ !is.factor(.x))) %>% 
+  corrr::correlate() %>% 
+  corrr::focus(price) %>% 
+  filter(price > 0.4) %>% 
+  pull(term) -> high_corr_vars  #returns area and bathrooms / stories as highest correlated variables
+ 
+```
+```{r}
+
+housing %>% 
+  select(where(~ !is.factor(.x))) %>% 
+  corrr::correlate() %>% 
+  #corrr::fashion() %>% 
+  corrr::network_plot()
+
+```
+
+
+
+```{r}
+library(dplyr)
+housing <- data
+
+housing %>% 
+  select(high_corr_vars, price) -> housing
+
+housing
+```
+
+Split Data
+```{r}
+library(rsample)
+
+housing_split <- initial_split(housing, strata = price)
+training_data <- training(housing_split)
+testing_data  <- testing(housing_split)
+
+
+``` 
+
+DATA PREPROCESSING
+```{r}
+#training_data %>% 
+  recipe(price ~., training_data) %>% 
+  step_dummy(all_nominal()) %>% 
+  step_normalize(all_numeric(), -all_outcomes()) %>% 
+  prep() -> the_recipe
+
+juice(the_recipe) -> juiced
+```
+
+********
+Use Parsnip to apply regression type, linear reg in this case
+```{r}
+lm_model <- parsnip::linear_reg() %>% 
+  set_engine("lm") %>% 
+  set_mode("regression")
+```
+
+
+MODEL FITTING -- Fit model on the juiced recipe
+```{r}
+lm_fit <- fit(lm_model, price ~., juiced)
+lm_fit
+```
+PREDICTIONS -- Pipe the lm_fit into the predict fxn
+```{r}
+
+lm_fit %>% 
+  predict(new_data = juiced) %>% 
+  mutate(truth = training_data$price) -> predicts_train
+
+lm_fit %>% 
+  predict(new_data = bake(the_recipe, testing_data)) %>% 
+  mutate(truth = testing_data$price) -> predicts_test
+
+```
+
+```{r}
+predicts_train %>% 
+  mutate(type = "train") %>% 
+  bind_rows(
+    predicts_test %>% 
+      mutate(type = 'test')
+    ) -> results
+```
+
+ACCURACY TEST -- Using yardstick
+```{r}
+library(yardstick)
+results %>% 
+  group_by(type) %>% 
+  yardstick::rmse(truth, .pred)
+```
+Difference in Estimates not wide, thus model is generalizing well.
+
+# Plotting true prices vs predictions
+```{r}
+library(dplyr)
+library(ggplot2)
+library(plotly)
+
+results %>% 
+  group_by(type) %>% 
+  ggplot(aes(x = truth, y = .pred)) +
+  geom_point() +
+  geom_abline(col = 'red', size = 3) +
+  theme_bw() +
+  labs(
+    x = 'Actual housing Prices',
+    y = 'Predicted Prices'
+  )
+                
+
+```
+
+# Now to predictions on new, fresh data
+
+```{r}
+#Create fresh, unseen data
+tibble(
+  area = c(7450,12001,6877,9960,16200,14200),
+  bathrooms = c(4,5,1,2,5,6),
+  stories = c(2,3,2,3,3,2)
+  ) -> new_houses
+
+#preprocess the new data and juice
+new_houses %>%  #data to pipe into the recipe
+  recipe() %>%  #starts with recipe
+    step_normalize(everything()) %>%  #normalize then preprocess
+  prep() -> recipe #ends with prep
+
+  juice(recipe) -> juiced_new #don't forget to juice the recipe
+```
+
+Use model to predict fresh, new data
+```{r}
+library(dplyr)
+
+predict(lm_fit, new_data = juiced_new) -> predictions
+predictions
+
+new_houses %>% 
+  mutate(price = predictions$.pred + 4761314) -> new_houses
+
+new_houses
+```
+
+
